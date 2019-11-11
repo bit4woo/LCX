@@ -2,6 +2,18 @@
 Lcx: Port Data Transfer
 Compile Environment: Windows / Linux / Mac OS / Android, Gcc
 */
+/*
+通俗理解：
+
+Slave 模式的服务器相当于一个2端都是长长的公头水管的接头，两端都主动连接其他接口。
+
+Listen模式的服务器相当于一个2端都是短短的母头的水管的接头，2端开口等待连接（监听）。
+
+Tran 模式的服务器相当于一个一端是公头（长）一端是母头（短）的水管接头，母头端等待连接（监听状态），公头端主动连接远程socket（长）。
+
+只需要遵循一个原则，公头只能和母头链接。然后就是根据场景的需要，将各个服务器串起来就OK了。
+
+*/
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,13 +58,14 @@ typedef int SOCKET;
 
 typedef ThreadReturn (*Func)(void*);
 
-FILE* lcx_log = NULL;
+FILE* lcx_log = NULL; //控制是否输出到日志文件
 FILE* lcx_hex = NULL;
 FILE* lcx_text = NULL;
 int total_connect = 0;
 
 int main_func(int argc,char**argv);
 
+//处理键盘中断
 void ctrl_c(int32_t i)
 {
   fprintf(stdout,"\n[-] Receive: Ctrl+C..I'll quit..\n");
@@ -61,7 +74,7 @@ void ctrl_c(int32_t i)
   exit(0);
 }
 
-
+//创建线程
 int in_createthread(Func run,void* data)
 {
 #ifdef WIN32
@@ -78,6 +91,7 @@ int in_createthread(Func run,void* data)
   return 0;
 }
 
+//数据传输，在2个socket之间进行双向数据传输。
 ThreadReturn  in_data_tran(void* p)
 {
   SOCKET t[2];
@@ -89,6 +103,8 @@ ThreadReturn  in_data_tran(void* p)
   unsigned short port[2];
 
   socklen_t len = sizeof(struct sockaddr_in);
+  //https://blog.csdn.net/workformywork/article/details/24554813
+  //getpeername 获取socke连接的对端【地址:端口】
   if(getpeername(t[0],(struct sockaddr*)sa,&len)==-1 || getpeername(t[1],(struct sockaddr*)(sa+1),&len)==-1)
   {
     fprintf(stdout,"\n[-] Get Remote Host Failed\n");
@@ -167,6 +183,7 @@ ThreadReturn  in_data_tran(void* p)
 #endif
 }
 
+//根据域名解析IP
 long gethost(const char* name)
 {
   if(name)
@@ -183,6 +200,7 @@ long gethost(const char* name)
   return -1;
 }
 
+// -slave模式 这里的2个参数也没有顺序关系，随意顺序，它们也是对等的。本机会同时连接2个服务器的端口，将从一个服务器收到的数据拿回来并转交给另一服务器
 int lcx_slave(const char* ip1_str,unsigned short port1,const char* ip2_str,unsigned short port2)
 {
   char out1[100],out2[100];
@@ -235,7 +253,7 @@ int lcx_slave(const char* ip1_str,unsigned short port1,const char* ip2_str,unsig
         {
           fprintf(stdout,"\n[+]  Connect %s Successed,Transfering...\n",out2);fflush(stdout);
           if(lcx_log)fprintf(lcx_log,"\n[+]  Connect %s Successed,Transfering...\n",out2),fflush(lcx_log);
-          in_data_tran(s);
+          in_data_tran(s);//双向数据传输
         }
         else
         {
@@ -257,6 +275,7 @@ int lcx_slave(const char* ip1_str,unsigned short port1,const char* ip2_str,unsig
   return 0;
 }
 
+//listen模式，本地同时监听2个端口，它们俩是对等的，它们互相传递自己的数据给对方，当然不会循环传递。所以使用时无需担心顺序问题
 int lcx_listen(unsigned short port1,unsigned short port2)
 {
   SOCKET s[2]={-1,-1};
@@ -269,6 +288,7 @@ int lcx_listen(unsigned short port1,unsigned short port2)
   sa.sin_addr.s_addr = INADDR_ANY;
   int i;
   int OK = 0;
+  //创建监听
   for(i=0; i<2; ++i)
   {
     s[i] = socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
@@ -321,6 +341,7 @@ int lcx_listen(unsigned short port1,unsigned short port2)
   i = 0;
   SOCKET t[2];
   socklen_t sz = sizeof(sa);
+  //等待连接
   while(1)
   {
     fprintf(stdout,"\n[+]  Waiting Connect On Port %u\n",p[i]);fflush(stdout);
@@ -333,7 +354,7 @@ int lcx_listen(unsigned short port1,unsigned short port2)
       if(lcx_log)fprintf(lcx_log,"\n[+]  Connect From %d.%d.%d.%d:%d On Port %d\n",ip[0],ip[1],ip[2],ip[3],htons(sa.sin_port),p[i]),fflush(lcx_log);
       if(i==1)
       {
-        in_createthread(in_data_tran,t);
+        in_createthread(in_data_tran,t);//创建一个线程来处理传入监听socket的数据。核心数据处理逻辑
       }
       i = (i==0);
     }
@@ -347,6 +368,7 @@ int lcx_listen(unsigned short port1,unsigned short port2)
   return 0;
 }
 
+//-tran模式：监听一个本地端口，作为客户端连接一个远程端口
 int lcx_tran(unsigned short port1,const char* ip2_str,unsigned short port2)
 {
   SOCKET s = socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
@@ -389,6 +411,7 @@ int lcx_tran(unsigned short port1,const char* ip2_str,unsigned short port2)
     closesocket(s);
     return -1;
   }
+
   SOCKET tt[2];
   SOCKET ac=-1;
   ok = sizeof(sa);
@@ -416,13 +439,13 @@ int lcx_tran(unsigned short port1,const char* ip2_str,unsigned short port2)
     sa.sin_port = htons(port2);
     sa.sin_addr.s_addr = ip2;
     SOCKET s2 = socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
-    if(connect(s2,(struct sockaddr*)&sa,sizeof(sa))==0)
+    if(connect(s2,(struct sockaddr*)&sa,sizeof(sa))==0) //连接远程端口
     {
       tt[0]=ac;
       tt[1]=s2;
       fprintf(stdout,"\n[+]  Connect %s Successed,Start Transfer...\n",out2);fflush(stdout);
       if(lcx_log)fprintf(lcx_log,"\n[+]  Connect %s Successed,Start Transfer...\n",out2),fflush(lcx_log);
-      in_createthread(in_data_tran,tt);
+      in_createthread(in_data_tran,tt);//核心数据处理模块，创建一个新的线程来处理
     }
     else
     {
